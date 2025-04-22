@@ -8,7 +8,6 @@ import threading
 from flask import request, jsonify
 from datetime import datetime
 import re
-from yt_dlp.utils import ExtractorError  # Import the specific exception
 
 # In-memory job tracker
 jobs = {}
@@ -57,27 +56,29 @@ def handle_download():
 
     def update_progress():
         nonlocal initial_title, quality, duration_minutes, final_path, final_filename_base
-        json_data = []
         for line in process.stdout:
             try:
                 json_line = json.loads(line.strip())
-                json_data.append(json_line)
                 if 'progress' in json_line:
-                    jobs[job_id]['progress'] = int(json_line['progress'])
+                    jobs[job_id]['progress'] = int(float(json_line['progress'].strip('%')))
                 elif 'total_bytes_estimate' in json_line and 'downloaded_bytes' in json_line:
                     total_chunks = json_line['total_bytes_estimate']
                     downloaded_chunks = json_line['downloaded_bytes']
-                    jobs[job_id]['progress'] = int((downloaded_chunks / total_chunks) * 100)
+                    if total_chunks is not None and downloaded_chunks is not None and total_chunks > 0:
+                        jobs[job_id]['progress'] = int((downloaded_chunks / total_chunks) * 100)
                 if 'title' in json_line:
                     initial_title = json_line['title'] or 'Untitled'
                     jobs[job_id]['title'] = initial_title
-                    final_filename_base = f"{timestamp}_{sanitize_filename(initial_title)}_{quality}.mp4"
+                    sanitized_title = sanitize_filename(initial_title)
+                    final_filename_base = f"{timestamp}_{sanitized_title}_{quality}.mp4"
                     final_path = Path(f"{downloads_dir}/{final_filename_base}") # Update path
                 if 'format_note' in json_line:
                     quality = json_line['format_note']
                 if 'duration' in json_line:
                     duration_seconds = int(json_line['duration'])
-                    duration_minutes = str(int(duration_seconds / 60))
+                    jobs[job_id]['duration'] = f"{int(duration_seconds // 60)}:{int(duration_seconds % 60):02d}"
+                if 'total_bytes_estimate' in json_line:
+                    jobs[job_id]['size'] = _format_bytes(json_line['total_bytes_estimate'])
             except json.JSONDecodeError as e:
                 print(f"Error decoding JSON: {e}, Line: {line.strip()}")
             except Exception as e:
@@ -110,7 +111,7 @@ def handle_download():
         new_filename = f"{timestamp}_{sanitized_title}_{quality}.mp4"
         new_path = Path(f"{downloads_dir}/{new_filename}")
 
-        if final_path.exists() and new_filename != final_filename_base:
+        if final_path.exists():
             try:
                 os.rename(final_path, new_path)
                 jobs[job_id]['filename'] = new_filename
@@ -119,11 +120,11 @@ def handle_download():
                 jobs[job_id]['error'] = f"Error renaming file: {e}"
                 jobs[job_id]['status'] = 'failed'
         else:
-            jobs[job_id]['filename'] = final_filename_base
-            response_data['filename'] = final_filename_base
+            jobs[job_id]['error'] = "Final downloaded file not found."
+            jobs[job_id]['status'] = 'failed'
 
         jobs[job_id]['quality'] = quality
-        jobs[job_id]['duration_minutes'] = duration_minutes
+        # Duration is already set in update_progress
 
     else:
         jobs[job_id]['status'] = 'failed'
@@ -135,6 +136,17 @@ def get_job_status(job_id):
     if job_id not in jobs:
         return jsonify({'error': 'Job not found'}), 404
     return jsonify(jobs[job_id])
+
+def _format_bytes(bytes_amount):
+    if bytes_amount is None:
+        return "N/A"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(bytes_amount)
+    for unit in units:
+        if size < 1024:
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{size:.2f} {units[-1]}"
 
 if __name__ == '__main__':
     # This block is for testing download.py independently (optional)
