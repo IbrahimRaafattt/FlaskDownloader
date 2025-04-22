@@ -8,7 +8,6 @@ import threading
 from flask import request, jsonify
 from datetime import datetime
 import re
-from yt_dlp.utils import ExtractorError  # Import the specific exception
 
 # In-memory job tracker
 jobs = {}
